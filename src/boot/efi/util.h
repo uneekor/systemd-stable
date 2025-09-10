@@ -122,7 +122,7 @@ static inline void unload_imagep(EFI_HANDLE *image) {
  * associated EFI variables.
  */
 #define LOADER_GUID \
-        { 0x4a67b082, 0x0a4c, 0x41cf, { 0xb6, 0xc7, 0x44, 0x0b, 0x29, 0xbb, 0x8c, 0x4f } }
+        GUID_DEF(0x4a67b082, 0x0a4c, 0x41cf, 0xb6, 0xc7, 0x44, 0x0b, 0x29, 0xbb, 0x8c, 0x4f)
 
 /* Note that GUID is evaluated multiple times! */
 #define GUID_FORMAT_STR "%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X"

@@ -1,164 +1,164 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include <efi.h>
-#include <efilib.h>
+//#include <efilib.h>
 
 #include "sha256.h"
 #include "slot.h"
 #include "util.h"
 
-static EFI_STATUS read_file(EFI_FILE *dir, const CHAR16 *name, UINTN size, UINT8 *buf) {
-        _cleanup_(FileHandleClosep) EFI_FILE *handle = NULL;
+static EFI_STATUS read_file(EFI_FILE *dir, const uint16_t *name, size_t size, uint8_t *buf) {
+        _cleanup_(file_closep) EFI_FILE *handle = NULL;
         EFI_STATUS err;
 
-        err = uefi_call_wrapper(dir->Open, 5, dir, &handle, (CHAR16 *) name, EFI_FILE_MODE_READ, 0ULL);
-        if (EFI_ERROR(err))
+        err = dir->Open(dir, &handle, (char16_t*) name, EFI_FILE_MODE_READ, 0ULL);
+        if (err != EFI_SUCCESS)
                 return err;
 
-        err = uefi_call_wrapper(handle->Read, 3, handle, &size, (CHAR8 *) buf);
-        if (EFI_ERROR(err))
+        err = handle->Read(handle, &size, (void*) buf);
+        if (err != EFI_SUCCESS)
                 return err;
 
         return err;
 }
 
-static EFI_STATUS write_file(EFI_FILE *dir, const CHAR16 *name, UINTN size, UINT8 *buf) {
-        _cleanup_(FileHandleClosep) EFI_FILE *handle = NULL;
+static EFI_STATUS write_file(EFI_FILE *dir, const uint16_t *name, size_t size, uint8_t *buf) {
+        _cleanup_(file_closep) EFI_FILE *handle = NULL;
         EFI_STATUS err;
 
-        err = uefi_call_wrapper(dir->Open, 5, dir, &handle, (CHAR16 *) name, EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0ULL);
-        if (EFI_ERROR(err)) {
+        err = dir->Open(dir, &handle, (char16_t*) name, EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0ULL);
+        if (err != EFI_SUCCESS) {
                 return err;
         }
 
-        err = uefi_call_wrapper(handle->Write, 3, handle, &size, (CHAR8 *) buf);
-        if (EFI_ERROR(err)) {
+        err = handle->Write(handle, &size, (void*) buf);
+        if (err != EFI_SUCCESS) {
                 return err;
         }
 
         return err;
 }
 
-static EFI_STATUS hash_and_write_file(EFI_FILE *dir, const CHAR16 *name, const CHAR16 *sum_name, UINTN size, UINT8 *buf) {
+static EFI_STATUS hash_and_write_file(EFI_FILE *dir, const uint16_t *name, const uint16_t *sum_name, size_t size, uint8_t *buf) {
         struct sha256_ctx ctx;
-        UINT8 hash[32];
+        uint8_t hash[32];
         EFI_STATUS err;
 
         sha256_init_ctx(&ctx);
         sha256_process_bytes(buf, size, &ctx);
-        sha256_finish_ctx(&ctx, &hash);
+        sha256_finish_ctx(&ctx, hash);
 
         err = write_file(dir, name, size, buf);
-        if (EFI_ERROR(err))
+        if (err != EFI_SUCCESS)
                 return err;
 
-        err = write_file(dir, sum_name, 32, (UINT8 *) &hash);
-        if (EFI_ERROR(err))
+        err = write_file(dir, sum_name, 32, (uint8_t *) &hash);
+        if (err != EFI_SUCCESS)
                 return err;
 
         return err;
 }
 
-static BOOLEAN validate_sha256sum(const UINT8 *buf, UINTN size, UINT8 sum[32]) {
+static bool validate_sha256sum(const uint8_t *buf, size_t size, uint8_t sum[32]) {
         struct sha256_ctx ctx;
-        UINT8 hash[32];
+        uint8_t hash[32];
 
         sha256_init_ctx(&ctx);
         sha256_process_bytes(buf, size, &ctx);
-        sha256_finish_ctx(&ctx, &hash);
+        sha256_finish_ctx(&ctx, hash);
 
-        return CompareMem(sum, hash, 32) == 0;
+        return memcmp(sum, hash, 32) == 0;
 }
 
-static BOOLEAN write_config(EFI_FILE *root_dir, ABConfig *config) {
+static bool write_config(EFI_FILE *root_dir, ABConfig *config) {
         EFI_STATUS err;
 
-        err = hash_and_write_file(root_dir, L"\\loader\\main\\config", L"\\loader\\main\\config.sha256", sizeof(ABConfig), (UINT8 *) config);
-        if (EFI_ERROR(err)) {
-                Print(L"Couldn't write config_a!\n");
-                uefi_call_wrapper(BS->Stall, 1, 3 * 1000 * 1000);
-                return FALSE;
+        err = hash_and_write_file(root_dir, L"\\loader\\main\\config", L"\\loader\\main\\config.sha256", sizeof(ABConfig), (uint8_t *) config);
+        if (err != EFI_SUCCESS) {
+                printf("Couldn't write config_a!\n");
+                BS->Stall(3 * 1000 * 1000);
+                return false;
         }
 
-        err = hash_and_write_file(root_dir, L"\\loader\\backup\\config", L"\\loader\\backup\\config.sha256", sizeof(ABConfig), (UINT8 *) config);
-        if (EFI_ERROR(err)) {
-                Print(L"Couldn't write config_b!\n");
-                uefi_call_wrapper(BS->Stall, 1, 3 * 1000 * 1000);
-                return FALSE;
+        err = hash_and_write_file(root_dir, L"\\loader\\backup\\config", L"\\loader\\backup\\config.sha256", sizeof(ABConfig), (uint8_t *) config);
+        if (err != EFI_SUCCESS) {
+                printf("Couldn't write config_b!\n");
+                BS->Stall(3 * 1000 * 1000);
+                return false;
         }
 
-        return TRUE;
+        return true;
 }
 
-BOOLEAN get_ab_config(EFI_FILE *root_dir, ABConfig *config) {
+bool get_ab_config(EFI_FILE *root_dir, ABConfig *config) {
         ABConfig config_a, config_b;
-        UINT8 sum_a[32], sum_b[32];
-        BOOLEAN a_valid, b_valid;
+        uint8_t sum_a[32], sum_b[32];
+        bool a_valid, b_valid;
         EFI_STATUS err_a, err_b;
 
-        err_a = read_file(root_dir, L"\\loader\\main\\config", sizeof(config_a), (UINT8 *) &config_a);
-        err_b = read_file(root_dir, L"\\loader\\backup\\config", sizeof(config_b), (UINT8 *) &config_b);
+        err_a = read_file(root_dir, L"\\loader\\main\\config", sizeof(config_a), (uint8_t *) &config_a);
+        err_b = read_file(root_dir, L"\\loader\\backup\\config", sizeof(config_b), (uint8_t *) &config_b);
 
-        if (EFI_ERROR(err_a) && EFI_ERROR(err_b)) {
+        if (err_a != EFI_SUCCESS && err_b != EFI_SUCCESS) {
                 /* No readable boot slots detected. Quiet error. */
-                return FALSE;
+                return false;
         }
 
-        err_a = read_file(root_dir, L"\\loader\\main\\config.sha256", sizeof(sum_a), (UINT8 *) &sum_a);
-        err_b = read_file(root_dir, L"\\loader\\backup\\config.sha256", sizeof(sum_b), (UINT8 *) &sum_b);
+        err_a = read_file(root_dir, L"\\loader\\main\\config.sha256", sizeof(sum_a), (uint8_t *) &sum_a);
+        err_b = read_file(root_dir, L"\\loader\\backup\\config.sha256", sizeof(sum_b), (uint8_t *) &sum_b);
 
-        if (EFI_ERROR(err_a) && EFI_ERROR(err_b)) {
-                Print(L"Boot slots detected but no checksums present\n");
-                return FALSE;
+        if (err_a != EFI_SUCCESS && err_b != EFI_SUCCESS) {
+                printf("Boot slots detected but no checksums present\n");
+                return false;
         }
 
-        a_valid = validate_sha256sum((UINT8 *) &config_a, sizeof(config_a), sum_a);
-        b_valid = validate_sha256sum((UINT8 *) &config_b, sizeof(config_b), sum_b);
+        a_valid = validate_sha256sum((uint8_t *) &config_a, sizeof(config_a), sum_a);
+        b_valid = validate_sha256sum((uint8_t *) &config_b, sizeof(config_b), sum_b);
 
         if (!a_valid && !b_valid) {
-                Print(L"Boot slots detected but all checksums invalid\n");
-                uefi_call_wrapper(BS->Stall, 1, 3 * 1000 * 1000);
-                return FALSE;
+                printf("Boot slots detected but all checksums invalid\n");
+                BS->Stall(3 * 1000 * 1000);
+                return false;
         }
 
         // If both config slots are valid but are not equal, assume B was
         // interrupted in the process of writing and recreate it from A.
-        if (a_valid && b_valid && CompareMem(&config_a, &config_b, sizeof(config_a)) != 0) {
-                b_valid = FALSE;
+        if (a_valid && b_valid && memcmp(&config_a, &config_b, sizeof(config_a)) != 0) {
+                b_valid = false;
         }
 
         if (a_valid && !b_valid) {
-                Print(L"Recovering config B from config A\n");
+                printf("Recovering config B from config A\n");
 
-                CopyMem(&config_b, &config_a, sizeof(config_a));
-                CopyMem(&sum_b, &sum_a, sizeof(sum_a));
+                memcpy(&config_b, &config_a, sizeof(config_a));
+                memcpy(&sum_b, &sum_a, sizeof(sum_a));
 
-                write_file(root_dir, L"\\loader\\backup\\config", sizeof(config_a), (UINT8 *) &config_b);
-                write_file(root_dir, L"\\loader\\backup\\config.sha256", sizeof(sum_b), (UINT8 *) &sum_b);
+                write_file(root_dir, L"\\loader\\backup\\config", sizeof(config_a), (uint8_t *) &config_b);
+                write_file(root_dir, L"\\loader\\backup\\config.sha256", sizeof(sum_b), (uint8_t *) &sum_b);
 
-                b_valid = TRUE;
+                b_valid = true;
         }
 
         if (b_valid && !a_valid) {
-                Print(L"Recovering config A from config B\n");
+                printf("Recovering config A from config B\n");
 
-                CopyMem(&config_a, &config_b, sizeof(config_b));
-                CopyMem(&sum_a, &sum_b, sizeof(sum_b));
+                memcpy(&config_a, &config_b, sizeof(config_b));
+                memcpy(&sum_a, &sum_b, sizeof(sum_b));
 
-                write_file(root_dir, L"\\loader\\main\\config", sizeof(config_a), (UINT8 *) &config_a);
-                write_file(root_dir, L"\\loader\\main\\config.sha256", sizeof(sum_a), (UINT8 *) &sum_a);
+                write_file(root_dir, L"\\loader\\main\\config", sizeof(config_a), (uint8_t *) &config_a);
+                write_file(root_dir, L"\\loader\\main\\config.sha256", sizeof(sum_a), (uint8_t *) &sum_a);
 
-                a_valid = TRUE;
+                a_valid = true;
         }
 
         *config = config_a;
-        return TRUE;
+        return true;
 }
 
-BOOLEAN increment_boot_count(EFI_FILE *root_dir, ABConfig *config) {
+bool increment_boot_count(EFI_FILE *root_dir, ABConfig *config) {
         if (config->boot_count >= config->max_boot_count) {
-                Print(L"Boot count already at max, not incrementing!\n");
-                return FALSE;
+                printf("Boot count already at max, not incrementing!\n");
+                return false;
         }
 
         config->boot_count++;
@@ -166,9 +166,9 @@ BOOLEAN increment_boot_count(EFI_FILE *root_dir, ABConfig *config) {
         return write_config(root_dir, config);
 }
 
-BOOLEAN switch_active_slot(EFI_FILE *root_dir, ABConfig *config) {
+bool switch_active_slot(EFI_FILE *root_dir, ABConfig *config) {
         config->active_slot = !config->active_slot;
-        config->upgrade_pending = FALSE;
+        config->upgrade_pending = false;
         config->boot_count = 0;
 
         return write_config(root_dir, config);

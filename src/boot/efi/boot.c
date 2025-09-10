@@ -2411,43 +2411,44 @@ static EFI_STATUS image_start(
         return log_error_status(err, "Failed to execute %ls (%ls): %m", entry->title_show, entry->loader);
 }
 
-static EFI_STATUS boot_ab(EFI_LOADED_IMAGE *parent_image, EFI_HANDLE device, EFI_FILE *root_dir, ABConfig *config) {
+static EFI_STATUS boot_ab(EFI_HANDLE *parent_image, EFI_HANDLE device, EFI_FILE *root_dir, ABConfig *config) {
         EFI_HANDLE image;
-        _cleanup_freepool_ EFI_DEVICE_PATH *path = NULL;
+        _cleanup_free_ EFI_DEVICE_PATH *path = NULL;
         EFI_STATUS err;
 
         if (config->boot_count >= config->max_boot_count) {
-                Print(L"Boot failed %d time(s) on slot %d\n", config->boot_count, config->active_slot);
-                uefi_call_wrapper(BS->Stall, 1, 3 * 1000 * 1000);
+                printf("Boot failed %d time(s) on slot %d\n", config->boot_count, config->active_slot);
+                BS->Stall(3 * 1000 * 1000);
                 switch_active_slot(root_dir, config);
         }
 
         if (config->upgrade_pending) {
-                Print(L"Upgrade pending, trying new boot on slot %d\n", config->active_slot);
-                uefi_call_wrapper(BS->Stall, 1, 3 * 1000 * 1000);
+                printf("Upgrade pending, trying new boot on slot %d\n", config->active_slot);
+                BS->Stall(3 * 1000 * 1000);
                 increment_boot_count(root_dir, config);
         }
 
-        path = FileDevicePath(device, config->active_slot == SLOT_A ? config->a_efi : config->b_efi);
+        make_file_device_path(device, config->active_slot == SLOT_A ? config->a_efi : config->b_efi, &path);
         if (!path) {
-                Print(L"Error getting device path\n");
-                uefi_call_wrapper(BS->Stall, 1, 3 * 1000 * 1000);
+                printf("Error getting device path\n");
+                BS->Stall(3 * 1000 * 1000);
                 return EFI_INVALID_PARAMETER;
         }
 
-        err = uefi_call_wrapper(BS->LoadImage, 6, TRUE, parent_image, path, NULL, 0, &image);
-        if (EFI_ERROR(err)) {
-                _cleanup_freepool_ CHAR16 *str = NULL;
-                str = DevicePathToStr(path);
-                Print(L"Error loading image %s: %r\n", str, err);
-                uefi_call_wrapper(BS->Stall, 1, 3 * 1000 * 1000);
+        err = BS->LoadImage(true, parent_image, path, NULL, 0, &image);
+        if (err != EFI_SUCCESS) {
+                _cleanup_free_ uint16_t *str = NULL;
+                // Warning: return value is ignored.
+                device_path_to_str(path, &str);
+                printf("Error loading image %ls: %lu\n", str, err);
+                BS->Stall(3 * 1000 * 1000);
                 return err;
         }
 
-        efivar_set_time_usec(LOADER_GUID, L"LoaderTimeExecUSec", 0);
-        err = uefi_call_wrapper(BS->StartImage, 3, image, NULL, NULL);
+        efivar_set_time_usec(MAKE_GUID_PTR(LOADER), L"LoaderTimeExecUSec", 0);
+        err = BS->StartImage(image, NULL, NULL);
 
-        uefi_call_wrapper(BS->UnloadImage, 1, image);
+        BS->UnloadImage(image);
         return err;
 }
 
@@ -2723,7 +2724,7 @@ static EFI_STATUS run(EFI_HANDLE image) {
         if (err != EFI_SUCCESS)
                 return log_error_status(err, "Unable to open root directory: %m");
 
-        if (get_ab_config(root_dir, &ab_config) && !EFI_ERROR(boot_ab(image, loaded_image->DeviceHandle, root_dir, &ab_config))) {
+        if (get_ab_config(root_dir, &ab_config) && boot_ab(image, loaded_image->DeviceHandle, root_dir, &ab_config) == EFI_SUCCESS) {
                 return EFI_SUCCESS;
         }
 
